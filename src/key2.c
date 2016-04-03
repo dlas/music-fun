@@ -17,6 +17,7 @@ PARTICULAR PURPOSE.  See the GNU General Public License for more details.
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
+#include "shared.h"
 
 
 /* What is the input sample rate */
@@ -289,13 +290,23 @@ double process_chunk(short * input, FILTER * fs, int n_filter) {
 	return sample_energy;
 }
 
-void loop2(FILTER * fs) {
+void update_accumulator(int * in, int * out, int n) {
+	int i;
+	for (i = 0; i < n; i++) {
+		out[i] += in[i];
+	}
+}
+void loop2(FILTER * fs, SCALE * scales, int scale_n) {
 
 	short tmpdata[CHUNK_SIZE*2*2];
-	double energy[LEN(note_table) * 5];
+	double energy[LEN(note_table) * OCTAVES];
 	double se;
 	double fe;
-	int notes_present[12];
+	int notes_present[LEN(note_table)];
+	int notes_accumulator[LEN(note_table)];
+	int count = 0;
+	memset(notes_accumulator, 0, sizeof(notes_accumulator));
+	SCALE * scale = NULL;
 
 	while(1) {
 		/* Grab a chunks worth of data */
@@ -304,16 +315,37 @@ void loop2(FILTER * fs) {
 		se = process_chunk(tmpdata, fs, OCTAVES * LEN(note_table));
 		/* Extract notes */
 		fe = filter_guess_notes(fs, energy,  LEN(note_table), OCTAVES, notes_present);
+		update_accumulator(notes_present, notes_accumulator, LEN(note_table));
+
+		/* Periodically (once we've generated enough note counts)
+		 * try to guess the scale.
+		 */
+		if (count > 1000) {
+			scale = guess_scale(scales, scale_n, notes_accumulator);
+			memset(notes_accumulator, 0, sizeof(notes_accumulator));
+			count = 0;
+		}
+		count++;
+
+		/* Update the display */
 		dump_energies(energy, fe, 12, OCTAVES);
-		//dump_notes(notes_present);
+		printf("%i\n", count);
+		if (scale) printf("\nSCALE: %s\n", scale->name);
+		dump_notes(notes_present);
+
+
+
 	}
 }
 
 int main(int argc, char ** argv) {
 
 	FILTER * fs;
+	SCALE * scale;
+	int scale_n;
+	build_all_scales(&scale, &scale_n);
 	fs = make_filters(note_table, note_names, LEN(note_table), OCTAVES, SAMPLE_RATE);
-	loop2(fs);
+	loop2(fs, scale, scale_n);
 
 
 	return 0;
