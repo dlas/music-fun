@@ -30,7 +30,7 @@ PARTICULAR PURPOSE.  See the GNU General Public License for more details.
 /*
  * Rolloff controls how responsive we are to new notes.
  */
-#define ROLLOFF 0.9998
+#define ROLLOFF 0.9999
 /*
  * How many octaves will we consider? 
  */
@@ -38,14 +38,6 @@ PARTICULAR PURPOSE.  See the GNU General Public License for more details.
 
 
 #define LEN(x) (sizeof(x)/sizeof(x[0]))
-
-/*
- * What are the frequencies and names of the notes.
- */
-double note_table[] = {65.41, 69.30, 73.42, 77.78, 82.41, 87.31, 92.50, 98.00, 103.93, 110.00, 116.54, 123.47};
-char *note_names[] = {
-	"C ", "C#", "D ", "D#", "E ", "F ", "F#", "G ", "G#", "A ", "A#", "B "};
-
 
 /*
  * THEORY OF OPERATION
@@ -105,7 +97,11 @@ void filter_touch(FILTER * f, double delta) {
 /*
  * Setup a bunch of filters from a table of notes.
  */
-FILTER * make_filters(double * note_table, char ** names, int notes, int octaves, double sample_freq) {
+FILTER * make_filters(double * note_table,
+	char ** names,
+	int notes,
+	int octaves,
+	double sample_freq) {
 
 	int space = notes * octaves;
 	int n,o;
@@ -154,13 +150,17 @@ void  update_filters(FILTER * fs, int n, short sample) {
 	}
 }
 
-
 /* Guess which note (ignoring octave) are present 
  * |fs| a filter bank
  * |energy| a pre-allocated array of octaves*notes doubles
  * |notes_present| a pre-allocated array of ints. notes that are present will be set to 1
  * */
-double filter_guess_notes(FILTER * fs, double * energy, int notes, int octaves, int *notes_present) {
+double filter_guess_notes(FILTER * fs,
+	double * energy,
+	int notes,
+	int octaves,
+	int *notes_present) {
+
 	int i;
 	double total_energy = 0;
 	int n = notes * octaves;
@@ -187,7 +187,7 @@ double filter_guess_notes(FILTER * fs, double * energy, int notes, int octaves, 
 			/* Count something as a note if it has at last
 			 * 1/10 of the energy as well as a minimum energy
 			 */
-			if (e > total_energy / 10 && e > 1e9) {
+			if (e > total_energy / 10 && e > 1e8) {
 				notes_present[note] = 1;
 			}
 		}
@@ -248,31 +248,6 @@ void dump_energies(double * energy, double total_energy, int notes, int octaves)
 
 
 /*
- * Read raw data into memory. Put it in output
- */
-int get_data_chunk(short * output) {
-	/*
-	 * Bytes = chunk_size * bytes_per_short * channels 
-	 */
-	int left_to_read = CHUNK_SIZE * 2 * 2;
-	int pos = 0;
-
-	/* Keep reading until we have enough data */
-	while (left_to_read > 0) {
-		int len;
-		len = read(0, ((char*)(output))  + pos, left_to_read);
-		if (len <0) {
-			abort();
-		}
-		pos+=len;
-
-		left_to_read-=len;
-	}
-	return 0;
-}
-
-
-/*
  * Process a bunch of samples.  There is a high system-call overhead to
  * getting samples so we don't retrieve samples one at a time. Instead, 
  * loop2, will retrieve them at the display-update rate. process_chunk will
@@ -296,6 +271,8 @@ void update_accumulator(int * in, int * out, int n) {
 		out[i] += in[i];
 	}
 }
+
+
 void loop2(FILTER * fs, SCALE * scales, int scale_n) {
 
 	short tmpdata[CHUNK_SIZE*2*2];
@@ -310,11 +287,16 @@ void loop2(FILTER * fs, SCALE * scales, int scale_n) {
 
 	while(1) {
 		/* Grab a chunks worth of data */
-		get_data_chunk(tmpdata);
+		get_data_chunk(tmpdata, CHUNK_SIZE);
 		/* Update the filter bank */
 		se = process_chunk(tmpdata, fs, OCTAVES * LEN(note_table));
 		/* Extract notes */
-		fe = filter_guess_notes(fs, energy,  LEN(note_table), OCTAVES, notes_present);
+		fe = filter_guess_notes(fs,
+				energy,
+				LEN(note_table),
+				OCTAVES,
+				notes_present);
+
 		update_accumulator(notes_present, notes_accumulator, LEN(note_table));
 
 		/* Periodically (once we've generated enough note counts)
@@ -328,13 +310,10 @@ void loop2(FILTER * fs, SCALE * scales, int scale_n) {
 		count++;
 
 		/* Update the display */
-		dump_energies(energy, fe, 12, OCTAVES);
-		printf("%i\n", count);
-		if (scale) printf("\nSCALE: %s\n", scale->name);
+		//dump_energies(energy, fe, 12, OCTAVES);
+		//printf("%i\n", count);
+		if (scale) printf("SCALE: %s\t", scale->name);
 		dump_notes(notes_present);
-
-
-
 	}
 }
 

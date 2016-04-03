@@ -62,7 +62,8 @@ void * append(void * a, int ai, void *b, int bi) {
 }
 
 void  build_all_scales(SCALE ** out, int * n) {
-	SCALE * minor, *major, *all;
+	SCALE  *major, *all;
+	// SCALE * minor
 	int i;
 
 	fprintf(stderr, "START BUILD SCALE\n");
