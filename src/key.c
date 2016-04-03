@@ -2,9 +2,16 @@
 #include <complex.h>
 #include <fftw3.h>
 #include <stdlib.h>
+#include <math.h>
+#include <stdio.h>
+#include <string.h>
+#include <errno.h>
+#include <unistd.h>
 
+#define TIME 20
 
-#define CHUNK_SIZE (44100/60)
+#define CHUNK_SIZE (44100/TIME)
+
 
 #define LEN(x) (sizeof(x)/sizeof(x[0]))
 
@@ -15,24 +22,49 @@ char *note_names[] = {
 
 typedef struct {
 	fftw_plan fftwplan;
-	fftw_complex  * fft_in;
-	fftw_complex  * fft_out;
-	short tmpdata[CHUNK_SIZE];
+	fftw_complex  * fftw_in;
+	fftw_complex  * fftw_out;
+	short tmpdata[CHUNK_SIZE * 2];
 	double energy[CHUNK_SIZE];
 	int fd;
 } STATE;
 
 
+void build_bucket_to_note2() {
+	int i;
+
+	for (i = 0; i < CHUNK_SIZE; i++) {
+		bucket_to_note[i] = -1;
+	}
+
+	for (i = 0; i < LEN(note_table); i++) {
+		double f = note_table[i];
+
+		do {	
+			int bucket = f/TIME;
+			bucket_to_note[bucket] = i;
+			bucket_to_note[bucket+1] = i;
+			f=f*2.0;
+		}while (f < 44100);
+
+
+	}
+
+	for (i = 0; i < CHUNK_SIZE; i++) {
+		fprintf(stderr, "ASSIGN: %i to %i\n", i*TIME, bucket_to_note[i]);
+	}
+}
 void build_bucket_to_note() {
 	int i;
+
 	for (i = 0; i < CHUNK_SIZE; i++) {
 		double f;
-		f = i*60;
+		f = i*TIME;
+
 		while (f > 123.47) {
 			f/=2.0;
 		}
 
-		double logf = log(f);
 		int j;
 		int closest = 0;
 		double closest_dist = 100000000;
@@ -44,8 +76,8 @@ void build_bucket_to_note() {
 			}
 		}
 
-		fprintf(stderr, "ASSIGN: %f (bucket %i) to %s\n",
-				f, i, note_names[j]);
+		fprintf(stderr, "ASSIGN: %f(%f) (bucket %i) to %i:%s\n",
+				(double)(i*TIME), f, i, closest, note_names[closest]);
 
 		bucket_to_note[i] = closest;
 	}
@@ -55,7 +87,10 @@ void setup_fftw(STATE * s) {
 	s->fftw_in= (fftw_complex*)fftw_malloc(sizeof(fftw_complex) * CHUNK_SIZE);
 	s->fftw_out= (fftw_complex*)fftw_malloc(sizeof(fftw_complex) * CHUNK_SIZE);
 
-	s->fftwplan = fftw_plan_dft_c2c_1d(CHUNK_SIZE, s->fftw_in, s->fftw_out, FFTW_MEASURE);
+	s->fftwplan = fftw_plan_dft_1d(CHUNK_SIZE,
+			s->fftw_in,
+			s->fftw_out,
+			FFTW_FORWARD,FFTW_MEASURE);
 }
 
 
@@ -67,30 +102,34 @@ void error(char * s) {
 
 
 int get_data_chunk(STATE * s) {
-	int left_to_read = CHUNK_SIZE;
+	int left_to_read = CHUNK_SIZE * 2 * 2;
+	int pos = 0;
 
 	while (left_to_read > 0) {
 		int len;
-		len = read(s->fd, s->tmpdata  + (left_to_read - CHUNK_SIZE), left_to_read * 2);
+		len = read(s->fd, ((char*)(s->tmpdata))  + pos, left_to_read);
 		if (len <0) {
 			error(strerror(errno));
 		}
+		pos+=len;
 
 		left_to_read-=len;
 	}
-	return 0;
 }
 
 int do_fft(STATE * s) {
 
 	int i;
 	for (i = 0; i < CHUNK_SIZE; i++) {
-		s->fftw_in[i] = s->tmpdata[i];
+		s->fftw_in[i] = s->tmpdata[i*2];
 	}
 	fftw_execute(s->fftwplan);
 	for (i = 0; i < CHUNK_SIZE; i++) {
-		s->energy[i] = s->fftw_out[i] * conj(s->fftw_out[i])
+		s->energy[i] = (s->fftw_out[i] * conj(s->fftw_out[i]));
+		
 	}
+
+	return 0;
 }
 
 int bucketize(STATE * s, double * bucket) {
@@ -99,48 +138,59 @@ int bucketize(STATE * s, double * bucket) {
 	double min_energy;
 	int i;
 
-	memset(bucket, 0, 12 * sizeof(int));
+	memset(bucket, 0, LEN(note_table) * sizeof(double));
 
-	for (i= 0; i < CHUNK_SIZE; i++) {
+	for (i= 24; i < CHUNK_SIZE/16; i++) {
+		int b;
 		total_energy +=s->energy[i];
-		bucket[bucket_to_note[i]] += s->energy[i];
-	}
-
-	min_energy = total_energy / 10.0;
-
-	for (i = 0; i < LEN(note_table); i++) {
-		if (bucket[i] > min_energy) {
-			fprintf("%s", note_names[i]);
-		} else {
-			fprintf("  ");
+		b = bucket_to_note[i];
+		if (b != -1) {
+			bucket[b] += s->energy[i];
 		}
 	}
-	fprintf("\n");
+
+	min_energy = total_energy / 10;
+
+	printf("%f\t", min_energy);
+	for (i = 0; i < LEN(note_table); i++) {
+		if (bucket[i] > min_energy && log10(bucket[i])>10.0) {
+			printf("%s", note_names[i]);
+		} else {
+			printf("  ");
+		}
+	}
+
+	for (i = 0; i < LEN(note_table); i++) {
+		printf("%f\t", log10(bucket[i]));
+	}
+	printf("\n");
+	return 0;
 }
 
 void loop(STATE * s) {
 
-	double tb[12];
+	double tb[LEN(note_table)];
 	
 	while (1) {
 		fprintf(stderr, "GET\n");
 
-		get_data_chunk();
+		get_data_chunk(s);
 		fprintf(stderr, "FFT\n");
-		do_fft();
+		do_fft(s);
 		fprintf(stderr, "BUCKET\n");
 		bucketize(s, tb);
 	}
 }
 
-void main(void) {
+int main(void) {
 	STATE s;
-	build_bucket_to_note();
+	build_bucket_to_note2();
 
 	setup_fftw(&s);
 
-	s->fd = 0;
-	loop(s);
+	s.fd = 0;
+	loop(&s);
+	return 0;
 }
 
 	
