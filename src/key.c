@@ -1,3 +1,14 @@
+/* Copyright (C) 2016 David Stafford
+
+This program is free software; you can redistribute it and/or modify it under
+the terms of the GNU General Public License, version 2 as published by the Free
+Software Foundation. 
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE.  See the GNU General Public License for more details.
+*/
+
 
 #include <complex.h>
 #include <fftw3.h>
@@ -9,28 +20,55 @@
 #include <unistd.h>
 #include "shared.h"
 
+/* What is the input sample rate */
+#define SAMPLE_RATE 44100
+/* How to quantize one second */
 #define TIME 10
-
-#define CHUNK_SIZE (44100/TIME)
+/* How many samples will we work with at once */
+#define CHUNK_SIZE (SAMPLE_RATE/TIME)
 
 
 #define LEN(x) (sizeof(x)/sizeof(x[0]))
 
+/* What are the frequencies and names of notes */
 double note_table[] = {65.41, 69.30, 73.42, 77.78, 82.41, 87.31, 92.50, 98.00, 103.93, 110.00, 116.54, 123.47};
-int bucket_to_note[CHUNK_SIZE];
 char *note_names[] = {
 	"C ", "C#", "D ", "D#", "E ", "F ", "F#", "G ", "G#", "A ", "A#", "B "};
 
+/* Helper array that (once filled in) associates each frequency to
+ * an note as an index into note_table and note_names. 
+ * The frequency |F| corresponds to the index |F/TIME| in the
+ * bucket_to_note_array
+ */
+int bucket_to_note[CHUNK_SIZE];
+
+
+/*
+ * Utility struct that holds the state of the world while we process
+ * things.
+ */
 typedef struct {
+	/* FFTW plan and input and output array */
 	fftw_plan fftwplan;
 	fftw_complex  * fftw_in;
 	fftw_complex  * fftw_out;
+
+	/* This is the array of audio samples. We expect samples
+ 	 * Stereo, signed, 16 bit little endian PCM format */
 	short tmpdata[CHUNK_SIZE * 2];
+
+	/* A processed array with the total energy at each frequency */
 	double energy[CHUNK_SIZE];
+
+	/* Input file descriptor */
 	int fd;
 } STATE;
 
 
+/* One way of assigning frequencies to notes: Pick the bucket index
+ * thatis one lower and one greater than any note and assocaite
+ * those with the note. Ignore off-note frequencies.
+ */
 void build_bucket_to_note2() {
 	int i;
 
@@ -41,20 +79,24 @@ void build_bucket_to_note2() {
 	for (i = 0; i < LEN(note_table); i++) {
 		double f = note_table[i];
 
+		/* Write f and all of its harmonics into bucket_to_note */
+
 		do {	
 			int bucket = f/TIME;
 			bucket_to_note[bucket] = i;
 			bucket_to_note[bucket+1] = i;
 			f=f*2.0;
 		}while (f < 44100);
-
-
 	}
-
 	for (i = 0; i < CHUNK_SIZE; i++) {
 		fprintf(stderr, "ASSIGN: %i to %i\n", i*TIME, bucket_to_note[i]);
 	}
 }
+
+
+/*
+ * Here is an alternative: Assign every frequency to its closest note
+ */
 void build_bucket_to_note() {
 	int i;
 
@@ -62,6 +104,7 @@ void build_bucket_to_note() {
 		double f;
 		f = i*TIME;
 
+		/* Keep dividing to find the base frequency */
 		while (f > 123.47) {
 			f/=2.0;
 		}
@@ -84,6 +127,9 @@ void build_bucket_to_note() {
 	}
 }
 
+/*
+ * Allocate arrays for fftw and setup a fft plan 
+ */
 void setup_fftw(STATE * s) {
 	s->fftw_in= (fftw_complex*)fftw_malloc(sizeof(fftw_complex) * CHUNK_SIZE);
 	s->fftw_out= (fftw_complex*)fftw_malloc(sizeof(fftw_complex) * CHUNK_SIZE);
@@ -102,6 +148,9 @@ void error(char * s) {
 }
 
 
+/*
+ * Read raw data into memory. Put it in s->tmpdata
+ */
 int get_data_chunk(STATE * s) {
 	int left_to_read = CHUNK_SIZE * 2 * 2;
 	int pos = 0;
@@ -119,13 +168,21 @@ int get_data_chunk(STATE * s) {
 	return 0;
 }
 
+/*
+ * This does the FFT, computing s->energy froms->tmpdata
+ */
 int do_fft(STATE * s) {
 
 	int i;
+	/* Input is in stereo so we only care about every other sample */
 	for (i = 0; i < CHUNK_SIZE; i++) {
 		s->fftw_in[i] = s->tmpdata[i*2];
 	}
+
+	/* FFT */
 	fftw_execute(s->fftwplan);
+
+	/* Now compute the energy in each frequency*/
 	for (i = 0; i < CHUNK_SIZE; i++) {
 		s->energy[i] = (s->fftw_out[i] * conj(s->fftw_out[i]));
 		
@@ -134,6 +191,13 @@ int do_fft(STATE * s) {
 	return 0;
 }
 
+/*
+ * This guesses the notes present given the frequency. 
+ * It Fills in the bucket array with the total energy for each
+ * note and then increments tcount for each note present. 
+ *
+ * It also formats a nice line to stdout listing the notes.
+ */
 int bucketize(STATE * s, double * bucket, int *tcount) {
 
 	double total_energy;
