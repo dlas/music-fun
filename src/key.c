@@ -7,8 +7,9 @@
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
+#include "shared.h"
 
-#define TIME 20
+#define TIME 10
 
 #define CHUNK_SIZE (44100/TIME)
 
@@ -115,6 +116,7 @@ int get_data_chunk(STATE * s) {
 
 		left_to_read-=len;
 	}
+	return 0;
 }
 
 int do_fft(STATE * s) {
@@ -132,7 +134,7 @@ int do_fft(STATE * s) {
 	return 0;
 }
 
-int bucketize(STATE * s, double * bucket) {
+int bucketize(STATE * s, double * bucket, int *tcount) {
 
 	double total_energy;
 	double min_energy;
@@ -140,7 +142,7 @@ int bucketize(STATE * s, double * bucket) {
 
 	memset(bucket, 0, LEN(note_table) * sizeof(double));
 
-	for (i= 24; i < CHUNK_SIZE/16; i++) {
+	for (i= 26; i < CHUNK_SIZE/16; i++) {
 		int b;
 		total_energy +=s->energy[i];
 		b = bucket_to_note[i];
@@ -151,10 +153,10 @@ int bucketize(STATE * s, double * bucket) {
 
 	min_energy = total_energy / 10;
 
-	printf("%f\t", min_energy);
 	for (i = 0; i < LEN(note_table); i++) {
 		if (bucket[i] > min_energy && log10(bucket[i])>10.0) {
 			printf("%s", note_names[i]);
+			tcount[i]++;
 		} else {
 			printf("  ");
 		}
@@ -167,29 +169,42 @@ int bucketize(STATE * s, double * bucket) {
 	return 0;
 }
 
-void loop(STATE * s) {
+void loop(STATE * s, SCALE * scale, int scale_n) {
 
 	double tb[LEN(note_table)];
+	int tcount[LEN(note_table)];
+
+	int count = 0;
+	SCALE * last_scale = NULL;
 	
 	while (1) {
-		fprintf(stderr, "GET\n");
 
 		get_data_chunk(s);
-		fprintf(stderr, "FFT\n");
 		do_fft(s);
-		fprintf(stderr, "BUCKET\n");
-		bucketize(s, tb);
+		if (last_scale) {
+			fprintf(stderr, "SCALE: %s \t", last_scale->name);
+		}
+		bucketize(s, tb, tcount);
+		count++;
+		if (count > 1000) {
+			last_scale = guess_scale(scale, scale_n, tcount);
+			memset(tcount, 0, sizeof(int) * LEN(note_table));
+			count = 0;
+		}
 	}
 }
 
 int main(void) {
 	STATE s;
+	SCALE * scale;
+	int scale_n;
+	build_all_scales(&scale, &scale_n);
 	build_bucket_to_note2();
 
 	setup_fftw(&s);
 
 	s.fd = 0;
-	loop(&s);
+	loop(&s, scale, scale_n);
 	return 0;
 }
 
