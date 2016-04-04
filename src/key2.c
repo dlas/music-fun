@@ -30,7 +30,7 @@ PARTICULAR PURPOSE.  See the GNU General Public License for more details.
 /*
  * Rolloff controls how responsive we are to new notes.
  */
-#define ROLLOFF 0.9999
+#define ROLLOFF 0.9998
 /*
  * How many octaves will we consider? 
  */
@@ -95,6 +95,37 @@ void filter_touch(FILTER * f, double delta) {
 
 
 /*
+ * Try to be clever about picking the rolloff. The idea is that for
+ * each note we'll pick a decay factor that's some big (like 20) multiple
+ * of the period in samples. The equation comes from:
+ *
+ * X_0 = v; x_n = a*x_(n-1).  Let X_n = v/2.
+ * v/2 = a*x_n-1 --> v/2 = a^n*v --> a^n = 1/2. 
+ * Therefore, a = exp(ln(1/2)/2).
+ * When we do, this we also need to introduce a normalization factor of
+ * (1-a). 
+ */
+double halflife_to_rolloff(double halflife) {
+	return exp(-.6931/halflife);
+}
+
+/*
+ * What normalization factor do we need to apply during filter_energy
+ * to compensate for the decay factor above?
+ *
+ * This comes from:  x_n == a(x_(n-1)) +v.
+ * But in the steady state, we have x_n==x_(n-1) so
+ * x_n = a*(x_n) + v --> x_n = v/(1-a). 
+ *
+ * The factor of 1000 is essentially arbitrary but is calibrated against
+ * some cutoffs in other code and generally makes the normalizing factors
+ * close to 1.0
+ */
+double normalizer_from_rolloff(double rolloff) {
+	return 1000 * (1 - rolloff);
+}
+
+/*
  * Setup a bunch of filters from a table of notes.
  */
 FILTER * make_filters(double * note_table,
@@ -127,11 +158,11 @@ FILTER * make_filters(double * note_table,
 			cur = fs+(n + notes *o);
 			cur->length = len;
 			cur->index = 0;
-			cur-> rolloff = ROLLOFF;
-			cur->normalizer = 1.0/len;
+			cur-> rolloff = halflife_to_rolloff(len*16);
+			cur->normalizer = normalizer_from_rolloff(cur->rolloff);
 			asprintf(&cur->name, "%i%s", o, names[n]);
-			fprintf(stderr, "%s: %f %f %i (%i:%i)\n",
-				cur->name, freq, 20 * cur->normalizer, len, o, n);
+			fprintf(stderr, "%s: %f %f %f %i (%i:%i)\n",
+				cur->name, freq, cur->rolloff, cur->normalizer, len, o, n);
 		}
 		/* Don't forget to udpate the octave! */
 		mult*=2.0;
@@ -310,7 +341,7 @@ void loop2(FILTER * fs, SCALE * scales, int scale_n) {
 		count++;
 
 		/* Update the display */
-		//dump_energies(energy, fe, 12, OCTAVES);
+		dump_energies(energy, fe, 12, OCTAVES);
 		//printf("%i\n", count);
 		if (scale) printf("SCALE: %s\t", scale->name);
 		dump_notes(notes_present);
