@@ -100,7 +100,7 @@ int test_scale(int * note_frequencies, SCALE * s) {
 		if (s->legal_notes[i]) {
 			score += note_frequencies[i];
 		} else {
-			score -= note_frequencies[i] * 2;
+			score -= note_frequencies[i];
 		}
 	}
 
@@ -113,7 +113,7 @@ int test_scale(int * note_frequencies, SCALE * s) {
 SCALE * guess_scale(SCALE * s, int num_scales, int * note_frequencies) {
 	int i;
 	SCALE * best = NULL;
-	int best_score = 0;
+	int best_score = -10000000;
 
 	for (i = 0; i < num_scales; i++) {
 		int try;
@@ -125,7 +125,7 @@ SCALE * guess_scale(SCALE * s, int num_scales, int * note_frequencies) {
 	}
 
 	if (best!= NULL) {
-		fprintf(stderr, "SCALE: %s (%i)", best->name, best_score);
+		fprintf(stderr, "SCALE: %s (%i)\n", best->name, best_score);
 	}
 
 	return best;

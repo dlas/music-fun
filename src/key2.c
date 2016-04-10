@@ -23,19 +23,19 @@ PARTICULAR PURPOSE.  See the GNU General Public License for more details.
 /* What is the input sample rate */
 #define SAMPLE_RATE 44100
 /* How to quantize one second */
-#define TIME 20
+#define TIME 10
 /* How many samples will we work with at once */
 #define CHUNK_SIZE (SAMPLE_RATE/TIME)
 
-/*
- * Rolloff controls how responsive we are to new notes.
- */
-#define ROLLOFF 0.9998
 /*
  * How many octaves will we consider? 
  */
 #define OCTAVES 5
 
+/*
+ * What is the minimun energy to care about a note 
+ */
+#define MINIMUM_ENERGY 1e9
 
 #define LEN(x) (sizeof(x)/sizeof(x[0]))
 
@@ -73,17 +73,33 @@ typedef struct FILTER{
 	/* Projected amplitue onto the sine and cosine waves */
 	double xsin;
 	double xcos;
+
+	double accumulator;
+	double max;
 	
 } FILTER;
 
 
-/* Get the total (sine + cosine) energy in a particular filter */
-double filter_energy(FILTER * f) {
-	return (f->xsin*f->xsin + f->xcos * f->xcos) * f->normalizer;;
+/* Get the total (sine + cosine) energy in a particular filter.
+ * This gets the average energy in the filter since the last time
+ * filter_energy was called (which should be exactly once per
+ * CHUNK_SIZE samples).
+ */
+double filter_energy_average(FILTER * f) {
+	double e = f->accumulator;
+	f->accumulator = 0;
+	return e * f->normalizer / CHUNK_SIZE;
+}
+
+double filter_energy_max(FILTER * f) {
+	double e = f->max;
+	f->max = 0;
+	return e * f->normalizer;
 }
 
 /* Update a filter with a new sample */
 void filter_touch(FILTER * f, double delta) {
+	double e;
 	/* What is the current phase angle?*/
 	double rad = 2*M_PI * (double)f->index / (double)f->length;
 	/* Update sine and cosine parts */
@@ -91,6 +107,17 @@ void filter_touch(FILTER * f, double delta) {
 	f->xcos = f->xcos * f->rolloff + delta *  cos(rad);
 	/* Update the index */
 	f->index = (f->index+1) % f->length;
+
+	/* Update accumulator which we will use to keep track of the
+	 * average energy over a sampl.
+	 */
+
+	e = (f->xsin*f->xsin) + (f->xcos*f->xcos);
+
+	if (e> f->max) {
+		f->max= e;
+	}
+	f->accumulator += (f->xsin*f->xsin) + (f->xcos*f->xcos);
 }
 
 
@@ -101,7 +128,7 @@ void filter_touch(FILTER * f, double delta) {
  *
  * X_0 = v; x_n = a*x_(n-1).  Let X_n = v/2.
  * v/2 = a*x_n-1 --> v/2 = a^n*v --> a^n = 1/2. 
- * Therefore, a = exp(ln(1/2)/2).
+ * Therefore, a = exp(ln(1/2)/n).
  * When we do, this we also need to introduce a normalization factor of
  * (1-a). 
  */
@@ -159,10 +186,11 @@ FILTER * make_filters(double * note_table,
 			cur->length = len;
 			cur->index = 0;
 			cur-> rolloff = halflife_to_rolloff(len*16);
+		//	cur-> rolloff = halflife_to_rolloff(8 * CHUNK_SIZE);
 			cur->normalizer = normalizer_from_rolloff(cur->rolloff);
 			asprintf(&cur->name, "%i%s", o, names[n]);
-			fprintf(stderr, "%s: %f %f %f %i (%i:%i)\n",
-				cur->name, freq, cur->rolloff, cur->normalizer, len, o, n);
+	//		fprintf(stderr, "%s: %f %f %f %i (%i:%i)\n",
+	//			cur->name, freq, cur->rolloff, cur->normalizer, len, o, n);
 		}
 		/* Don't forget to udpate the octave! */
 		mult*=2.0;
@@ -190,7 +218,8 @@ double filter_guess_notes(FILTER * fs,
 	double * energy,
 	int notes,
 	int octaves,
-	int *notes_present) {
+	int *notes_present,
+	double sample_energy) {
 
 	int i;
 	double total_energy = 0;
@@ -205,11 +234,13 @@ double filter_guess_notes(FILTER * fs,
 	 * filters or the current sample energy???
 	 */
 	for (i = 0; i < n; i++) {
-		double e = filter_energy(fs+i);
+		double e = filter_energy_max(fs+i);
+		//total_energy += filter_energy_average(fs+i);
 		total_energy +=e;
 		energy[i] = e;
 	}
 
+	total_energy *=1;
 	/* Iterate over all notes.  Mark notes that have enough energy. */
 	for (octave = 0; octave < octaves; octave ++) {
 		for (note = 0; note < notes; note++) {
@@ -218,7 +249,7 @@ double filter_guess_notes(FILTER * fs,
 			/* Count something as a note if it has at last
 			 * 1/10 of the energy as well as a minimum energy
 			 */
-			if (e > total_energy / 10 && e > 1e8) {
+			if (e > total_energy / 10 && e > MINIMUM_ENERGY) {
 				notes_present[note] = 1;
 			}
 		}
@@ -296,6 +327,15 @@ double process_chunk(short * input, FILTER * fs, int n_filter) {
 	return sample_energy;
 }
 
+void dump_accumulator(int * in, int n) {
+	int i;
+	for (i = 0; i < n; i++) {
+		printf("\t%i", in[i]);
+	}
+	printf("\n");
+
+}
+
 void update_accumulator(int * in, int * out, int n) {
 	int i;
 	for (i = 0; i < n; i++) {
@@ -304,7 +344,7 @@ void update_accumulator(int * in, int * out, int n) {
 }
 
 
-void loop2(FILTER * fs, SCALE * scales, int scale_n) {
+void loop2(FILTER * fs, SCALE * scales, int scale_n, int enable_display, int max) {
 
 	short tmpdata[CHUNK_SIZE*2*2];
 	double energy[LEN(note_table) * OCTAVES];
@@ -318,7 +358,9 @@ void loop2(FILTER * fs, SCALE * scales, int scale_n) {
 
 	while(1) {
 		/* Grab a chunks worth of data */
-		get_data_chunk(tmpdata, CHUNK_SIZE);
+		if ( get_data_chunk(tmpdata, CHUNK_SIZE) < 0) {
+			break;
+		}
 		/* Update the filter bank */
 		se = process_chunk(tmpdata, fs, OCTAVES * LEN(note_table));
 		/* Extract notes */
@@ -326,9 +368,13 @@ void loop2(FILTER * fs, SCALE * scales, int scale_n) {
 				energy,
 				LEN(note_table),
 				OCTAVES,
-				notes_present);
+				notes_present, 
+				se);
 
 		update_accumulator(notes_present, notes_accumulator, LEN(note_table));
+		if ( max > 0 && count > max) {
+			break;
+		}
 
 		/* Periodically (once we've generated enough note counts)
 		 * try to guess the scale.
@@ -337,25 +383,52 @@ void loop2(FILTER * fs, SCALE * scales, int scale_n) {
 			scale = guess_scale(scales, scale_n, notes_accumulator);
 			memset(notes_accumulator, 0, sizeof(notes_accumulator));
 			count = 0;
+			if (scale) printf("SCALE: %s\n", scale->name);
 		}
 		count++;
 
-		/* Update the display */
-		dump_energies(energy, fe, 12, OCTAVES);
-		//printf("%i\n", count);
-		if (scale) printf("SCALE: %s\t", scale->name);
-		dump_notes(notes_present);
+		if (enable_display) {
+			/* Update the display */
+			dump_energies(energy, fe, 12, OCTAVES);
+			dump_accumulator(notes_accumulator, LEN(note_table));
+			//printf("%i\n", count);
+			if (scale) printf("SCALE: %s\t", scale->name);
+			dump_notes(notes_present);
+		}
+	}
+	printf("DONEDONE! %i\n", count);
+	scale = guess_scale(scales, scale_n, notes_accumulator);
+	if (scale) printf("SCALE: %s\n", scale->name);
+}
+
+void parse_args(int  argc, char ** argv, int * enable_display, int * max) {
+	int i;
+	*enable_display = 1;
+	*max = -1;
+	for (i = 1; i < argc; i++) {
+		if (!strcmp(argv[i], "-nodisplay")) {
+			*enable_display = 0;
+		} else if (!strcmp(argv[i], "-max")) {
+			*max = atoi(argv[++i]);
+		} else {
+			fprintf(stderr, "BAD ARGS\n");
+			exit(1);
+		}
 	}
 }
+
 
 int main(int argc, char ** argv) {
 
 	FILTER * fs;
 	SCALE * scale;
 	int scale_n;
+	int enable_display;
+	int max;
+	parse_args(argc, argv, &enable_display, &max);
 	build_all_scales(&scale, &scale_n);
 	fs = make_filters(note_table, note_names, LEN(note_table), OCTAVES, SAMPLE_RATE);
-	loop2(fs, scale, scale_n);
+	loop2(fs, scale, scale_n, enable_display, max);
 
 
 	return 0;

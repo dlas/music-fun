@@ -36,6 +36,9 @@ int get_data_chunk(short * output, int chunk_samples) {
 		if (len <0) {
 			abort();
 		}
+		if (len == 0) {
+			return -1;
+		}
 		pos+=len;
 
 		left_to_read-=len;
