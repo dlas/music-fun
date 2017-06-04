@@ -83,7 +83,7 @@ int pickwinner(STATE * s) {
 	double max = 0;
 	int maxi = 0;
 	int i;
-	for (i = 0; i < CUTOFF; i++) {
+	for (i = 6; i < CUTOFF; i++) {
 		if (s->downsampled[i] > max) {
 			maxi = i;
 			max = s->downsampled[i];
@@ -236,12 +236,13 @@ void calc_score2(int * history, int history_n, double * score_out, double * time
 
 void calc_score(int * history, int history_n, double * score_out, double * time_shift_out, double * freq_shift_out) {
 	int t_max = LEN(music);
-	double time_shift = (double)(history_n-1) / (double)t_max;
+	double time_shift = (double)(history_n) / (double)t_max;
 	double freq_shift = 0;
 
 	double i_h=0, i_hh=0,i_m=0,i_mm=0,i_hm=0;
 	double score = 0;
 	int i;
+	int x;
 
 	for (i = 0; i < t_max; i++) {
 		double m;
@@ -259,36 +260,27 @@ void calc_score(int * history, int history_n, double * score_out, double * time_
 
 	freq_shift = i_m/(double)(t_max) - i_h/(double)history_n;
 
-	/* See notebook page 17, 19 */
-	for (i = 0; i < t_max; i++) {
-		int first = floor((double)i * time_shift);
-		int last = ceil((double)(i+1) * time_shift);
-		int x;
-		assert(first >= 0);
-	//	assert(last < history_n);
-		for (x = first; x < last && x<history_n; x++) {
-			double factor = 1;
-			double h,m;
-			double s;
-			h = log(history[x]);
-			m = log(music[i]);
-			
-			if (x == first) {
-				factor = (double)x*time_shift- floor((double)x*time_shift);
-			} else if (x == last) {
-				factor = ceil((double)x*time_shift) - (double)x*time_shift;
-			}
-			if (factor == 0) { factor = 1.0;}
-			
+	for (x = 0; x < history_n; x++) {
+		int il, ih;
+		double distl, disth;
+		il = (double)x / time_shift;
+		ih = (double)(x+1)/time_shift;
+		distl = (freq_shift + log(history[x]) - log(music[il]));
+		distl*=distl;
 
-			assert(factor >=0.0);
-			assert(factor <=1.0);
-			factor /=time_shift;
-			s = (freq_shift + h - m);
-			score+=s*s*factor;
-		//	printf("F: %f %f %f %f %f %f %f %i %i\n", m, h, factor, time_shift, s, i_m, i_h, t_max, history_n);
+		disth = freq_shift + log(history[x]) - log(music[ih]);
+		disth*=disth;
+
+		if (disth > distl || ih >= t_max) {
+			score+=distl;
+		} else {
+			score+=disth;
 		}
+
+	//	printf("%i %i %i %f %f %f\n", x, il, ih, distl, disth, score);
 	}
+
+	score/=(double)history_n;
 
 	*score_out = score;
 	*freq_shift_out = freq_shift;
@@ -323,8 +315,8 @@ int check_history(int * history, int history_n) {
 		}
 	}
 
-	if (min_score < 0.05) {
-		printf("************* BEST: %g %f %f %i***************\n\n\n", (min_score*10), best_freq_shift, best_time_shift, best_i);
+	if (min_score < 0.005) {
+		printf("************* BEST: %g %f %f %i***************\n\n\n", (min_score), best_freq_shift, best_time_shift, best_i);
 	}
 	return 0;
 }
