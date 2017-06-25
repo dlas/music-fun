@@ -25,7 +25,7 @@ PARTICULAR PURPOSE.  See the GNU General Public License for more details.
 /* What is the input sample rate */
 #define SAMPLE_RATE 44100
 /* How to quantize one second */
-#define TIME 10
+#define TIME 10 
 /* How many samples will we work with at once */
 #define CHUNK_SIZE (SAMPLE_RATE/TIME)
 
@@ -261,7 +261,7 @@ void calc_score3(double ** history, int history_n, double * score_out, double *s
 }
 */
 //double music[] = {N_E5, N_E5, N_E5, N_E5, N_E5};
-void calc_score2(int * history, int history_n, double * score_out, double * time_shift_out, double * freq_shift_out) {
+void calc_score2(int * history, double * energy, int history_n, double * score_out, double * time_shift_out, double * freq_shift_out) {
 	int t_max = LEN(music);
 	double time_shift = (double)(history_n) / (double)t_max;
 	double freq_shift = 0;
@@ -290,21 +290,21 @@ void calc_score2(int * history, int history_n, double * score_out, double * time
 	for (x = 0; x < history_n; x++) {
 		int il, ih;
 		double distl, disth;
+		double touse;
 		il = (double)x / time_shift;
-		ih = (double)(x+1)/time_shift;
-		distl = (freq_shift + log(history[x]) - log(music[il]));
-		distl*=distl;
+		ih = 1+(double)(x)/time_shift;
+		distl = pow((freq_shift + log(history[x]) - log(music[il])), 4);
 
-		disth = freq_shift + log(history[x]) - log(music[ih]);
-		disth*=disth;
+		disth = pow((freq_shift + log(history[x]) - log(music[ih])), 4);
 
 		if (disth > distl || ih >= t_max) {
-			score+=distl*distl;
+			touse = distl;
 		} else {
-			score+=disth*disth;
+			touse = disth;
 		}
 
-	//	printf("%i %i %i %f %f %f\n", x, il, ih, distl, disth, score);
+		touse/=(energy[x]);
+		score+=touse;
 	}
 
 	score/=(double)history_n;
@@ -347,14 +347,21 @@ void do_it(STATE* s, int blen, double *score_out, double *time_shift_out, double
 
 	int low, high;
 	int new_history[MAX_SAMPLES];
+	double new_energy[MAX_SAMPLES];
 	int i;
 	calc_range(s->history + MAX_SAMPLES - blen, blen, &low, &high);
 
 	for (i = 0; i < blen; i++) {
-		new_history[i] = pickwinner(s->e_history[MAX_SAMPLES-blen+i], low, high);
+		int f;
+		int idx;
+		idx = MAX_SAMPLES-blen+i;
+		
+		f = pickwinner(s->e_history[idx], low, high);
+		new_history[i] = f;
+		new_energy[i] = s->e_history[idx][f];
 	}
 
-	calc_score2(new_history, blen, score_out, time_shift_out, freq_shift_out);
+	calc_score2(new_history, new_energy, blen, score_out, time_shift_out, freq_shift_out);
 	*lr=low;
 	*hr=high;
 
@@ -375,7 +382,7 @@ int check_history(STATE * s) {
 
 	
 
-	for (i = 12; i < 40; i++) {
+	for (i = 12; i < 60; i++) {
 
 		//calc_score3(history + history_n - i, i, &score, &time_shift, &freq_shift);
 		//calc_score2(s->history + MAX_SAMPLES - i, i, &score, &time_shift, &freq_shift);
@@ -393,7 +400,7 @@ int check_history(STATE * s) {
 	}
 	ls=log10(min_score);
 	printf("%f %f %i %i-%i ", ls, best_freq_shift, best_i, low, high);
-	for (i = 60; i < MAX_SAMPLES; i++) {
+	for (i = 40; i < MAX_SAMPLES; i++) {
 		printf("%02i ", s->history[i]);
 	}
 	printf("\n");
